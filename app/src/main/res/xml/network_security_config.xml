@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">graphql.anilist.co</domain>
+        <domain includeSubdomains="true">api.ani.zip</domain>
+        <domain includeSubdomains="true">api.jikan.moe</domain>
+        <domain includeSubdomains="true">kitsu.io</domain>
+        <domain includeSubdomains="true">media.kitsu.app</domain>
+        <domain includeSubdomains="true">s4.anilist.co</domain>
+        <domain includeSubdomains="true">artworks.thetvdb.com</domain>
+        <domain includeSubdomains="true">api.groq.com</domain>
+        <domain includeSubdomains="true">generativelanguage.googleapis.com</domain>
+        <domain includeSubdomains="true">api.cerebras.ai</domain>
+        <domain includeSubdomains="true">api.sambanova.ai</domain>
+        <domain includeSubdomains="true">openrouter.ai</domain>
+        <domain includeSubdomains="true">api.mistral.ai</domain>
+        <domain includeSubdomains="true">api.together.xyz</domain>
+    </domain-config>
+</network-security-config>

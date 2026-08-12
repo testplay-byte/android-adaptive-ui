@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Aniverse</string>
+    <string name="default_category">Default</string>
+    <string name="home">Home</string>
+    <string name="library">Library</string>
+    <string name="search">Search</string>
+    <string name="settings">Settings</string>
+</resources>

@@ -1,0 +1,75 @@
+name: Build Generated UI
+
+# Triggers when:
+#   1. The AI system explicitly dispatches the workflow via workflow_dispatch (with the
+#      regenerated screen name as an input), OR
+#   2. Any file under app/src/main/java/com/adaptiveui/animeapp/generated/ is pushed to main
+#      (covers manual edits + the Contents-API pushes that happen when the AI regenerates a
+#      screen).
+#
+# On success: uploads the APK as a workflow artifact (14-day retention) AND fires a high-priority
+# ntfy.sh notification to the TASKISDONE topic so the developer gets an instant push alert with
+# a link to download the APK.
+
+on:
+  workflow_dispatch:
+    inputs:
+      screen_name:
+        description: 'Which screen was regenerated'
+        required: false
+        default: 'unknown'
+  push:
+    branches: [ main ]
+    paths:
+      - 'app/src/main/java/com/adaptiveui/animeapp/generated/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required by upload-artifact@v4 in some repo configurations
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aniverse-generated-debug
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Notify via ntfy
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="white_check_mark"
+            PRIORITY="high"
+            MESSAGE="The AI-generated APK is ready. Screen: ${{ github.event.inputs.screen_name || 'unknown' }}. Download from: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            EMOJI="x"
+            PRIORITY="urgent"
+            MESSAGE="APK build FAILED for screen: ${{ github.event.inputs.screen_name || 'unknown' }}. Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          curl -H "Title: Aniverse APK Build" \
+               -H "Tags: $EMOJI,android" \
+               -H "Priority: $PRIORITY" \
+               -d "$MESSAGE" \
+               https://ntfy.sh/TASKISDONE
