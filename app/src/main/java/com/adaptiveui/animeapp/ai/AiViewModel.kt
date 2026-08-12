@@ -140,7 +140,12 @@ class AiViewModel @Inject constructor(
     fun triggerBuild(composeSource: String, screenName: String) {
         viewModelScope.launch {
             _state.value = AiState.Generating
-            aiService.pushAndTriggerBuild(composeSource, screenName)
+            val token = aiSettings.value.githubToken
+            if (token.isBlank()) {
+                _state.value = AiState.Error("GitHub token not set. Add it in Settings → AI → GitHub Token.")
+                return@launch
+            }
+            aiService.pushAndTriggerBuild(composeSource, screenName, token)
                 .onSuccess { _state.value = AiState.BuildTriggered(it) }
                 .onFailure { _state.value = AiState.Error(it.message ?: "Build trigger failed") }
         }

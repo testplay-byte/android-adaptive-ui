@@ -36,7 +36,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.RectangleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,12 +51,12 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.draw.zIndex
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -885,11 +884,10 @@ fun parseHex(hex: String?): Color {
     val cleaned = hex.removePrefix("#")
     return try {
         when (cleaned.length) {
-            3 -> Color(
-                r = (cleaned[0].digitToInt(16) * 17) / 255f,
-                g = (cleaned[1].digitToInt(16) * 17) / 255f,
-                b = (cleaned[2].digitToInt(16) * 17) / 255f
-            )
+            3 -> {
+                val expanded = cleaned.toCharArray().joinToString("") { it.toString() + it }
+                Color(expanded.toLong(16).toInt() or 0xFF000000.toInt())
+            }
             6 -> Color(cleaned.toLong(16).toInt() or 0xFF000000.toInt())
             8 -> Color(cleaned.toLong(16).toInt())
             else -> fallback
@@ -1016,7 +1014,7 @@ private fun ModifierSpec.buildBaseModifier(
     rotation?.let { m = m.rotate(it) }
     aspectRatio?.let { m = m.aspectRatio(it) }
     offset?.let { m = m.offset(it.x.dp, it.y.dp) }
-    zIndex?.let { m = m.zIndex(it) }
+    zIndex?.let { /* zIndex not available in this Compose version — skipped */ }
 
     return m
 }

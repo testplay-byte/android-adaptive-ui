@@ -98,8 +98,11 @@ class SettingsDataStore @Inject constructor(
                 runCatching { json.decodeFromString<Map<String, ScreenSpec>>(raw) }.getOrNull()
             } ?: emptyMap()
             val updated = current - screenName
-            prefs[KEY_SCREEN_SPECS] = if (updated.isEmpty()) null
-                else json.encodeToString(MapSerializer(String.serializer(), ScreenSpec.serializer()), updated)
+            if (updated.isEmpty()) {
+                prefs.remove(KEY_SCREEN_SPECS)
+            } else {
+                prefs[KEY_SCREEN_SPECS] = json.encodeToString(MapSerializer(String.serializer(), ScreenSpec.serializer()), updated)
+            }
         }
     }
 
