@@ -194,7 +194,7 @@ fun AiConfigSection(
                 }
             )
             if (settings.useCustomModel) {
-                CommitOnFocusLossTextField(
+                StableTextField(
                     initialValue = customModelDraft,
                     placeholder = "e.g. openai/gpt-oss-20b",
                     onCommit = { newValue ->
@@ -210,7 +210,7 @@ fun AiConfigSection(
             // API key — uses local draft, commits on focus loss
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 Label("API key")
-                CommitOnFocusLossTextField(
+                StableTextField(
                     initialValue = apiKeyDraft,
                     placeholder = "Paste your API key",
                     singleLine = true,
@@ -299,7 +299,7 @@ fun AiConfigSection(
         // ─── GitHub token (needed for both modes if using "Build APK") ───
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Label("GitHub token (for Build APK)")
-            CommitOnFocusLossTextField(
+            StableTextField(
                 initialValue = githubTokenDraft,
                 placeholder = "Paste your GitHub PAT",
                 singleLine = true,
@@ -367,14 +367,23 @@ fun AiConfigSection(
     }
 }
 
-// ─── Commit-on-focus-loss text field (fixes the cursor-jump bug) ───────────
+// ─── Stable text field (fixes cursor-jump + commit issues) ───────────────
 
 /**
- * Text field that holds its own local state and commits the value ONLY when focus is lost.
- * This prevents the async-DataStore-round-trip cursor reset that made typing impossible.
+ * Text field that saves IMMEDIATELY on every change without cursor jump.
+ *
+ * The cursor-jump bug was caused by `remember(initialValue)` — when the DataStore save triggered
+ * a recomposition with a new `initialValue`, the local state reset, moving the cursor to 0.
+ *
+ * Fix: `remember` is NOT keyed on `initialValue`. Local state is the sole source of truth for
+ * `BasicTextField.value`. External changes sync in ONLY when the field is not focused (via
+ * `LaunchedEffect`). This means:
+ *  - Typing/pasting works smoothly (local state is never reset by round-trips)
+ *  - The value is saved to DataStore immediately (no focus-loss delay)
+ *  - External changes (e.g. from another screen) sync in when the field is not active
  */
 @Composable
-private fun CommitOnFocusLossTextField(
+private fun StableTextField(
     initialValue: String,
     placeholder: String,
     onCommit: (String) -> Unit,
@@ -384,9 +393,16 @@ private fun CommitOnFocusLossTextField(
     trailingIcon: @Composable (() -> Unit)? = null
 ) {
     val c = LocalColors.current
-    // Local state — survives recomposition without round-tripping through DataStore.
-    var text by remember(initialValue) { mutableStateOf(initialValue) }
-    val focusRequester = remember { FocusRequester() }
+    // CRITICAL: remember WITHOUT a key — local state survives recompositions.
+    var text by remember { mutableStateOf(initialValue) }
+    var isFocused by remember { mutableStateOf(false) }
+
+    // Sync from external when NOT focused (prevents cursor jump while typing).
+    LaunchedEffect(initialValue) {
+        if (!isFocused && text != initialValue) {
+            text = initialValue
+        }
+    }
 
     Row(
         modifier = modifier
@@ -406,7 +422,10 @@ private fun CommitOnFocusLossTextField(
             }
             BasicTextField(
                 value = text,
-                onValueChange = { text = it },
+                onValueChange = { newText ->
+                    text = newText  // local state is source of truth — no cursor jump
+                    onCommit(newText)  // save immediately
+                },
                 singleLine = singleLine,
                 textStyle = LocalTypography.current.body.copy(color = c.text),
                 cursorBrush = SolidColor(c.accent),
@@ -414,12 +433,7 @@ private fun CommitOnFocusLossTextField(
                 keyboardOptions = if (password) KeyboardOptions(keyboardType = KeyboardType.Password) else KeyboardOptions.Default,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .focusRequester(focusRequester)
-                    .onFocusChanged { fs ->
-                        if (!fs.isFocused && text != initialValue) {
-                            onCommit(text)
-                        }
-                    }
+                    .onFocusChanged { fs -> isFocused = fs.isFocused }
             )
         }
         if (trailingIcon != null) {

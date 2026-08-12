@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -82,9 +83,9 @@ fun AiBubbleHost(
     val state by aiVm.state.collectAsStateWithLifecycle()
     val c = LocalColors.current
 
-    // Show bubble if: enabled + quickEdit + (configured OR external mode)
-    val visible = aiSettings.enabled && aiSettings.quickEditEnabled &&
-        (aiSettings.isConfigured || aiSettings.isExternalMode)
+    // Show bubble whenever AI is enabled + quick-edit is on.
+    // Does NOT require isConfigured — the panel handles the "not configured" case gracefully.
+    val visible = aiSettings.enabled && aiSettings.quickEditEnabled
 
     var panelOpen by remember { mutableStateOf(false) }
 
@@ -123,6 +124,7 @@ fun AiBubbleHost(
                 screenName = screenName,
                 state = state,
                 isExternalMode = aiSettings.isExternalMode,
+                isConfigured = aiSettings.isConfigured,
                 aiVm = aiVm,
                 onDismiss = {
                     if (state !is AiState.Generating) {
@@ -140,6 +142,7 @@ private fun AiEditPanel(
     screenName: String,
     state: AiState,
     isExternalMode: Boolean,
+    isConfigured: Boolean,
     aiVm: AiViewModel,
     onDismiss: () -> Unit
 ) {
@@ -152,8 +155,17 @@ private fun AiEditPanel(
     val isGenerating = state is AiState.Generating
     val availableData = availableDataFor(screenName)
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Scrim (not dismissable while generating)
+    // The entire panel area gets imePadding so the keyboard pushes it up — this prevents
+    // the text field from being hidden behind the keyboard (which caused the scrim to receive
+    // the touch instead of the text field, dismissing the panel).
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+    ) {
+        // Scrim — dismisses when tapped. NOT dismissable while generating.
+        // The scrim is BEHIND the panel (first child of Box). The panel (second child) is on top
+        // and consumes touches in its area, so tapping the panel does NOT trigger the scrim.
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -161,11 +173,12 @@ private fun AiEditPanel(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
+                    enabled = !isGenerating,
                     onClick = onDismiss
                 )
         )
 
-        // Panel
+        // Panel — sits on top of the scrim. Touches here are consumed by the panel, not the scrim.
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -276,26 +289,48 @@ private fun AiEditPanel(
                             }
                         }
                     } else {
-                        // ─── Built-in mode flow (existing) ───
-                        SimpleTextField(
-                            value = instruction,
-                            onValueChange = { instruction = it },
-                            placeholder = "Describe the layout you want… (e.g. 'Show trending in a 2-column grid with big posters')",
-                            singleLine = false,
-                            maxLines = 5,
-                            modifier = Modifier.fillMaxWidth().height(120.dp)
-                        )
-                        PrimaryButton(
-                            text = "Generate Preview",
-                            onClick = { aiVm.generateSpec(instruction, screenName, availableData) },
-                            enabled = instruction.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        SecondaryButton(
-                            text = "Build real APK",
-                            onClick = { aiVm.generateCompose(instruction, screenName, availableData) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        // ─── Built-in mode flow ───
+                        if (!isConfigured) {
+                            // Not configured yet — show a message instead of the generate button.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(Radius.md))
+                                    .background(c.danger.copy(alpha = 0.12f))
+                                    .padding(Spacing.md)
+                            ) {
+                                DesignText(
+                                    text = "Add your API key and select a model in Settings → AI to use built-in generation. Or switch to External mode to use any AI manually.",
+                                    style = LocalTypography.current.caption,
+                                    color = c.danger
+                                )
+                            }
+                            SecondaryButton(
+                                text = "Close",
+                                onClick = onDismiss,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            SimpleTextField(
+                                value = instruction,
+                                onValueChange = { instruction = it },
+                                placeholder = "Describe the layout you want… (e.g. 'Show trending in a 2-column grid with big posters')",
+                                singleLine = false,
+                                maxLines = 5,
+                                modifier = Modifier.fillMaxWidth().height(120.dp)
+                            )
+                            PrimaryButton(
+                                text = "Generate Preview",
+                                onClick = { aiVm.generateSpec(instruction, screenName, availableData) },
+                                enabled = instruction.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            SecondaryButton(
+                                text = "Build real APK",
+                                onClick = { aiVm.generateCompose(instruction, screenName, availableData) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
 

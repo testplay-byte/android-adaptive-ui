@@ -81,7 +81,8 @@ internal fun SimpleTextField(
                 textStyle = textStyle.copy(color = c.text),
                 cursorBrush = SolidColor(c.accent),
                 visualTransformation = visualTransformation,
-                interactionSource = remember { MutableInteractionSource() }
+                interactionSource = remember { MutableInteractionSource() },
+                modifier = Modifier.fillMaxWidth()
             )
         }
         if (trailingIcon != null) {
