@@ -1,5 +1,8 @@
 package com.adaptiveui.animeapp.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,16 +12,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,12 +32,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.adaptiveui.animeapp.ai.FreeModelPresets
 import com.adaptiveui.animeapp.ai.SystemPrompt
 import com.adaptiveui.animeapp.ai.TestResult
@@ -47,14 +60,12 @@ import com.adaptiveui.animeapp.domain.model.FreeModelPreset
 /**
  * AI configuration UI embedded inside the Settings screen.
  *
- * All settings live in [AiSettings] (persisted via [com.adaptiveui.animeapp.core.datastore.SettingsDataStore]).
- * Local UI state (password mask toggle, custom-model text field, model-picker dialog visibility) is
- * kept here; commits flow up through [onSave] each time a field changes.
- *
- * Note on the custom-model field: we keep a local `customModelDraft` so the user can type freely
- * without each keystroke round-tripping through DataStore. The draft is committed to [onSave] on
- * focus loss (when the field loses focus) — preventing the cursor-jump problem that comes from
- * re-rendering on every keystroke.
+ * KEY FIXES from previous version:
+ * 1. All text fields (API key, GitHub token, custom model) use LOCAL state + commit on focus loss.
+ *    This eliminates the cursor-jump / 3-char-limit bug caused by async DataStore saves on every keystroke.
+ * 2. Model picker uses a proper [Dialog] composable (not a custom overlay inside a Column) — fixes the crash.
+ * 3. Added AI mode toggle: Built-in (uses the app's API key) vs External (manual copy/paste flow).
+ * 4. Added GitHub token field for the "Build APK" feature.
  */
 @Composable
 fun AiConfigSection(
@@ -66,10 +77,17 @@ fun AiConfigSection(
     modifier: Modifier = Modifier
 ) {
     val c = LocalColors.current
+    val context = LocalContext.current
     var showApiKey by remember { mutableStateOf(false) }
+    var showGithubToken by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
     var showPromptPreview by remember { mutableStateOf(false) }
+
+    // Local drafts for all text fields — committed to DataStore ONLY on focus loss.
+    // This prevents the async-round-trip cursor-jump bug.
     var customModelDraft by remember(settings.customModelId) { mutableStateOf(settings.customModelId) }
+    var apiKeyDraft by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
+    var githubTokenDraft by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Spacing.lg)) {
         // Enable AI
@@ -88,100 +106,210 @@ fun AiConfigSection(
             onCheckChange = { onSave(settings.copy(quickEditEnabled = it)) }
         )
 
-        // Provider picker
+        // AI Mode selector
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Label("Provider")
+            Label("AI Mode")
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                FreeModelPresets.providers.forEach { provider ->
-                    val preset = FreeModelPresets.defaultFor(provider)
-                    Chip(
-                        text = provider,
-                        selected = settings.provider.equals(provider, ignoreCase = true),
-                        onClick = {
-                            onSave(
-                                settings.copy(
-                                    provider = provider,
-                                    baseUrl = preset.baseUrl,
-                                    modelId = preset.modelId
-                                )
-                            )
-                        }
-                    )
-                }
+                Chip(
+                    text = "Built-in",
+                    selected = !settings.isExternalMode,
+                    onClick = { onSave(settings.copy(aiMode = "BUILT_IN")) }
+                )
+                Chip(
+                    text = "External (manual)",
+                    selected = settings.isExternalMode,
+                    onClick = { onSave(settings.copy(aiMode = "EXTERNAL")) }
+                )
             }
-        }
-
-        // Model picker
-        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Label("Model")
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(c.surfaceHi)
-                    .border(0.5.dp, c.outline, RoundedCornerShape(Radius.md))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { showModelPicker = true }
-                    )
-                    .padding(horizontal = Spacing.md, vertical = Spacing.md)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    DesignText(
-                        text = if (settings.useCustomModel) settings.customModelId.ifBlank { "(custom)" } else settings.modelId,
-                        style = LocalTypography.current.body,
-                        color = c.text,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Icons.ChevronDown(size = 18.dp)
-                }
-            }
-        }
-
-        // Custom model toggle + field
-        ToggleRow(
-            title = "Custom model ID",
-            subtitle = "Enter a model ID not in the preset list.",
-            checked = settings.useCustomModel,
-            onCheckChange = {
-                // Commit any pending draft before toggling.
-                if (customModelDraft != settings.customModelId) {
-                    onSave(settings.copy(useCustomModel = it, customModelId = customModelDraft))
-                } else {
-                    onSave(settings.copy(useCustomModel = it))
-                }
-            }
-        )
-        if (settings.useCustomModel) {
-            SimpleTextField(
-                value = customModelDraft,
-                onValueChange = { customModelDraft = it },
-                placeholder = "e.g. openai/gpt-oss-20b",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { fs ->
-                        // Commit the draft to settings when the field loses focus.
-                        if (!fs.isFocused && customModelDraft != settings.customModelId) {
-                            onSave(settings.copy(customModelId = customModelDraft))
-                        }
-                    }
+            DesignText(
+                text = if (settings.isExternalMode)
+                    "External mode: the bubble shows even without an API key. Copy the prompt, paste the response from any AI."
+                else
+                    "Built-in mode: the app calls the AI provider directly using your API key.",
+                style = LocalTypography.current.caption,
+                color = c.textMuted
             )
         }
 
-        // API key
+        // ─── Built-in settings (only relevant for BUILT_IN mode) ───
+        if (!settings.isExternalMode) {
+            // Provider picker
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Label("Provider")
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    FreeModelPresets.providers.forEach { provider ->
+                        Chip(
+                            text = provider,
+                            selected = settings.provider.equals(provider, ignoreCase = true),
+                            onClick = {
+                                val preset = FreeModelPresets.defaultFor(provider)
+                                onSave(settings.copy(provider = provider, baseUrl = preset.baseUrl, modelId = preset.modelId))
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Model picker (uses proper Dialog — fixes crash)
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Label("Model")
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.md))
+                        .background(c.surfaceHi)
+                        .border(0.5.dp, c.outline, RoundedCornerShape(Radius.md))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { showModelPicker = true }
+                        )
+                        .padding(horizontal = Spacing.md, vertical = Spacing.md)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        DesignText(
+                            text = if (settings.useCustomModel)
+                                settings.customModelId.ifBlank { "(custom)" }
+                            else settings.modelId,
+                            style = LocalTypography.current.body,
+                            color = c.text,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icons.ChevronDown(size = 18.dp)
+                    }
+                }
+            }
+
+            // Custom model toggle + field
+            ToggleRow(
+                title = "Custom model ID",
+                subtitle = "Enter a model ID not in the preset list.",
+                checked = settings.useCustomModel,
+                onCheckChange = {
+                    if (customModelDraft != settings.customModelId) {
+                        onSave(settings.copy(useCustomModel = it, customModelId = customModelDraft))
+                    } else {
+                        onSave(settings.copy(useCustomModel = it))
+                    }
+                }
+            )
+            if (settings.useCustomModel) {
+                CommitOnFocusLossTextField(
+                    initialValue = customModelDraft,
+                    placeholder = "e.g. openai/gpt-oss-20b",
+                    onCommit = { newValue ->
+                        customModelDraft = newValue
+                        if (newValue != settings.customModelId) {
+                            onSave(settings.copy(customModelId = newValue))
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // API key — uses local draft, commits on focus loss
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Label("API key")
+                CommitOnFocusLossTextField(
+                    initialValue = apiKeyDraft,
+                    placeholder = "Paste your API key",
+                    singleLine = true,
+                    password = !showApiKey,
+                    onCommit = { newValue ->
+                        apiKeyDraft = newValue
+                        if (newValue != settings.apiKey) {
+                            onSave(settings.copy(apiKey = newValue))
+                            onClearTestResult()
+                        }
+                    },
+                    trailingIcon = {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(Radius.pill))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { showApiKey = !showApiKey }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (showApiKey) Icons.EyeOff(size = 18.dp) else Icons.Eye(size = 18.dp)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                // Get free key link
+                val signupUrl = FreeModelPresets.defaultFor(settings.provider).keySignupUrl
+                DesignText(
+                    text = "Get a free key",
+                    style = LocalTypography.current.caption,
+                    color = c.accent,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(signupUrl)))
+                            }.onFailure {
+                                Toast.makeText(context, "Unable to open browser", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                )
+            }
+
+            // Temperature stepper
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Label("Temperature: ${"%.1f".format(settings.temperature)}")
+                Stepper(
+                    value = settings.temperature,
+                    range = 0.0..1.5,
+                    step = 0.1,
+                    onValueChange = { onSave(settings.copy(temperature = it)) }
+                )
+            }
+
+            // Test connection
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                SecondaryButton(
+                    text = "Test connection",
+                    onClick = onTestConnection,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                testResult?.let { res ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(if (res.success) c.success.copy(alpha = 0.12f) else c.danger.copy(alpha = 0.12f))
+                            .border(0.5.dp, if (res.success) c.success else c.danger, RoundedCornerShape(Radius.md))
+                            .padding(Spacing.md)
+                    ) {
+                        DesignText(
+                            text = res.message,
+                            style = LocalTypography.current.caption,
+                            color = if (res.success) c.success else c.danger
+                        )
+                    }
+                }
+            }
+        }
+
+        // ─── GitHub token (needed for both modes if using "Build APK") ───
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Label("API key")
-            SimpleTextField(
-                value = settings.apiKey,
-                onValueChange = { newKey ->
-                    onSave(settings.copy(apiKey = newKey))
-                    onClearTestResult()
-                },
-                placeholder = "Paste your API key",
+            Label("GitHub token (for Build APK)")
+            CommitOnFocusLossTextField(
+                initialValue = githubTokenDraft,
+                placeholder = "Paste your GitHub PAT",
                 singleLine = true,
-                visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
+                password = !showGithubToken,
+                onCommit = { newValue ->
+                    githubTokenDraft = newValue
+                    if (newValue != settings.githubToken) {
+                        onSave(settings.copy(githubToken = newValue))
+                    }
+                },
                 trailingIcon = {
                     Box(
                         modifier = Modifier
@@ -190,65 +318,26 @@ fun AiConfigSection(
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                                onClick = { showApiKey = !showApiKey }
+                                onClick = { showGithubToken = !showGithubToken }
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (showApiKey) Icons.EyeOff(size = 18.dp) else Icons.Eye(size = 18.dp)
+                        if (showGithubToken) Icons.EyeOff(size = 18.dp) else Icons.Eye(size = 18.dp)
                     }
-                }
-            )
-            DesignText(
-                text = "Stored locally on this device. Never sent anywhere except the chosen provider.",
-                style = LocalTypography.current.caption,
-                color = c.textMuted
-            )
-        }
-
-        // Temperature stepper
-        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Label("Temperature: ${"%.1f".format(settings.temperature)}")
-            Stepper(
-                value = settings.temperature,
-                range = 0.0..1.5,
-                step = 0.1,
-                onValueChange = { onSave(settings.copy(temperature = it)) }
-            )
-        }
-
-        // Test connection
-        Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            SecondaryButton(
-                text = "Test connection",
-                onClick = onTestConnection,
+                },
                 modifier = Modifier.fillMaxWidth()
             )
-            testResult?.let { res ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(Radius.md))
-                        .background(if (res.success) c.success.copy(alpha = 0.12f) else c.danger.copy(alpha = 0.12f))
-                        .border(0.5.dp, if (res.success) c.success else c.danger, RoundedCornerShape(Radius.md))
-                        .padding(Spacing.md)
-                ) {
-                    DesignText(
-                        text = res.message,
-                        style = LocalTypography.current.caption,
-                        color = if (res.success) c.success else c.danger
-                    )
-                }
-            }
         }
 
-        // System prompt
+        // System prompt preview
         SecondaryButton(
-            text = "Copy system prompt",
+            text = "View system prompt",
             onClick = { showPromptPreview = true },
             modifier = Modifier.fillMaxWidth()
         )
     }
 
+    // Model picker — proper Dialog (fixes the crash)
     if (showModelPicker) {
         ModelPickerDialog(
             presets = FreeModelPresets.forProvider(settings.provider),
@@ -260,6 +349,7 @@ fun AiConfigSection(
             onDismiss = { showModelPicker = false }
         )
     }
+
     if (showPromptPreview) {
         val clipboard = LocalClipboardManager.current
         val previewText = remember {
@@ -269,10 +359,73 @@ fun AiConfigSection(
             text = previewText,
             onCopy = {
                 clipboard.setText(AnnotatedString(previewText))
+                Toast.makeText(context, "Prompt copied to clipboard", Toast.LENGTH_SHORT).show()
                 showPromptPreview = false
             },
             onDismiss = { showPromptPreview = false }
         )
+    }
+}
+
+// ─── Commit-on-focus-loss text field (fixes the cursor-jump bug) ───────────
+
+/**
+ * Text field that holds its own local state and commits the value ONLY when focus is lost.
+ * This prevents the async-DataStore-round-trip cursor reset that made typing impossible.
+ */
+@Composable
+private fun CommitOnFocusLossTextField(
+    initialValue: String,
+    placeholder: String,
+    onCommit: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    password: Boolean = false,
+    trailingIcon: @Composable (() -> Unit)? = null
+) {
+    val c = LocalColors.current
+    // Local state — survives recomposition without round-tripping through DataStore.
+    var text by remember(initialValue) { mutableStateOf(initialValue) }
+    val focusRequester = remember { FocusRequester() }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.md))
+            .background(c.surfaceHi)
+            .border(0.5.dp, c.outline, RoundedCornerShape(Radius.md))
+            .padding(horizontal = Spacing.md, vertical = Spacing.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (text.isEmpty()) {
+                DesignText(
+                    text = placeholder,
+                    style = LocalTypography.current.body,
+                    color = c.textMuted
+                )
+            }
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it },
+                singleLine = singleLine,
+                textStyle = LocalTypography.current.body.copy(color = c.text),
+                cursorBrush = SolidColor(c.accent),
+                visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+                keyboardOptions = if (password) KeyboardOptions(keyboardType = KeyboardType.Password) else KeyboardOptions.Default,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester)
+                    .onFocusChanged { fs ->
+                        if (!fs.isFocused && text != initialValue) {
+                            onCommit(text)
+                        }
+                    }
+            )
+        }
+        if (trailingIcon != null) {
+            Spacer(Modifier.width(Spacing.sm))
+            trailingIcon()
+        }
     }
 }
 
@@ -409,7 +562,7 @@ internal fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifi
     }
 }
 
-// ─── Dialogs ─────────────────────────────────────────────────────────────────
+// ─── Dialogs (using proper Dialog composable — fixes crash) ───────────────
 
 @Composable
 private fun ModelPickerDialog(
@@ -419,11 +572,9 @@ private fun ModelPickerDialog(
     onDismiss: () -> Unit
 ) {
     val c = LocalColors.current
-    Scrim(onDismiss = onDismiss)
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .padding(horizontal = Spacing.xl)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(Radius.lg))
                 .background(c.surface)
@@ -432,7 +583,12 @@ private fun ModelPickerDialog(
         ) {
             DesignText(text = "Select a model", style = LocalTypography.current.title2, color = c.text)
             Spacer(Modifier.height(Spacing.sm))
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 presets.forEach { preset ->
                     val selected = preset.modelId == selectedModelId
                     Row(
@@ -470,23 +626,22 @@ private fun ModelPickerDialog(
 @Composable
 private fun PromptPreviewDialog(text: String, onCopy: () -> Unit, onDismiss: () -> Unit) {
     val c = LocalColors.current
-    Scrim(onDismiss = onDismiss)
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .padding(horizontal = Spacing.xl)
                 .fillMaxWidth()
-                .height(400.dp)
+                .heightIn(max = 500.dp)
                 .clip(RoundedCornerShape(Radius.lg))
                 .background(c.surface)
                 .padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
-            DesignText(text = "System prompt (spec mode)", style = LocalTypography.current.title2, color = c.text)
+            DesignText(text = "System prompt", style = LocalTypography.current.title2, color = c.text)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
+                    .weight(1f, fill = false)
+                    .heightIn(max = 350.dp)
                     .clip(RoundedCornerShape(Radius.sm))
                     .background(c.bg)
                     .padding(Spacing.md)

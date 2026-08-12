@@ -1,5 +1,9 @@
 package com.adaptiveui.animeapp.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -39,7 +43,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -55,18 +61,16 @@ import com.adaptiveui.animeapp.design.Text as DesignText
 /**
  * Floating AI Quick-Edit bubble + bottom panel.
  *
- * Shown when:
- *  - `aiSettings.enabled` is true (the master switch)
- *  - `aiSettings.isConfigured` is true (API key + base URL set)
- *  - `quickEditEnabled` is true (the bubble toggle)
+ * The bubble shows when:
+ *  - `aiSettings.enabled` is true
+ *  - `quickEditEnabled` is true
+ *  - Either `isConfigured` (Built-in mode) OR `isExternalMode` (External mode — no API key needed)
  *
- * The bubble is a circular accent-colored circle with a Sparkle icon. Tapping it opens a custom
- * bottom panel (not Material3 BottomSheet) where the user types a natural-language instruction,
- * generates a [com.adaptiveui.animeapp.interpreter.ScreenSpec] preview, and either applies it
- * (which persists to DataStore → the current screen re-renders via the interpreter) or discards.
- *
- * The panel also exposes a "Build real APK" path: the AI generates raw Compose source → pushed
- * to GitHub → workflow dispatched → returns the Actions run URL.
+ * External mode flow:
+ *  1. User types instruction
+ *  2. "Copy Prompt" button → copies system prompt + instruction to clipboard
+ *  3. Panel switches to "Paste Response" mode → user pastes JSON from their external AI
+ *  4. "Apply" parses the JSON as ScreenSpec → applies live
  */
 @Composable
 fun AiBubbleHost(
@@ -78,7 +82,10 @@ fun AiBubbleHost(
     val state by aiVm.state.collectAsStateWithLifecycle()
     val c = LocalColors.current
 
-    val visible = aiSettings.enabled && aiSettings.isConfigured
+    // Show bubble if: enabled + quickEdit + (configured OR external mode)
+    val visible = aiSettings.enabled && aiSettings.quickEditEnabled &&
+        (aiSettings.isConfigured || aiSettings.isExternalMode)
+
     var panelOpen by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -115,21 +122,8 @@ fun AiBubbleHost(
             AiEditPanel(
                 screenName = screenName,
                 state = state,
-                onGenerateSpec = { instruction ->
-                    aiVm.generateSpec(instruction, screenName, availableDataFor(screenName))
-                },
-                onGenerateCompose = { instruction ->
-                    aiVm.generateCompose(instruction, screenName, availableDataFor(screenName))
-                },
-                onApply = {
-                    val s = state
-                    if (s is AiState.PreviewReady) aiVm.applyPreview(s.spec)
-                },
-                onTriggerBuild = {
-                    val s = state
-                    if (s is AiState.ComposeReady) aiVm.triggerBuild(s.source, s.screenName)
-                },
-                onDiscard = { aiVm.discardPreview() },
+                isExternalMode = aiSettings.isExternalMode,
+                aiVm = aiVm,
                 onDismiss = {
                     if (state !is AiState.Generating) {
                         aiVm.dismiss()
@@ -145,16 +139,18 @@ fun AiBubbleHost(
 private fun AiEditPanel(
     screenName: String,
     state: AiState,
-    onGenerateSpec: (String) -> Unit,
-    onGenerateCompose: (String) -> Unit,
-    onApply: () -> Unit,
-    onTriggerBuild: () -> Unit,
-    onDiscard: () -> Unit,
+    isExternalMode: Boolean,
+    aiVm: AiViewModel,
     onDismiss: () -> Unit
 ) {
     val c = LocalColors.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var instruction by remember { mutableStateOf("") }
+    var pastedResponse by remember { mutableStateOf("") }
+    var externalStep by remember { mutableStateOf(0) } // 0 = type instruction, 1 = paste response
     val isGenerating = state is AiState.Generating
+    val availableData = availableDataFor(screenName)
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Scrim (not dismissable while generating)
@@ -189,7 +185,7 @@ private fun AiEditPanel(
                 Column(modifier = Modifier.weight(1f)) {
                     DesignText(text = "AI Quick Edit", style = LocalTypography.current.title2, color = c.text)
                     DesignText(
-                        text = "Screen: ${screenName.replaceFirstChar { it.uppercase() }}",
+                        text = "${screenName.replaceFirstChar { it.uppercase() }} · ${if (isExternalMode) "External" else "Built-in"}",
                         style = LocalTypography.current.caption,
                         color = c.textMuted
                     )
@@ -197,32 +193,110 @@ private fun AiEditPanel(
                 IconButton(onClick = onDismiss) { Icons.Close(size = 20.dp) }
             }
 
-            // Instruction text field
-            SimpleTextField(
-                value = instruction,
-                onValueChange = { instruction = it },
-                placeholder = "Describe the layout you want… (e.g. 'Show trending in a 2-column grid with big posters')",
-                singleLine = false,
-                maxLines = 5,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
-            )
-
-            // State-driven content
             when (state) {
                 is AiState.Idle -> {
-                    PrimaryButton(
-                        text = "Generate Preview",
-                        onClick = { onGenerateSpec(instruction) },
-                        enabled = instruction.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    SecondaryButton(
-                        text = "Build real APK",
-                        onClick = { onGenerateCompose(instruction) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (isExternalMode) {
+                        // ─── External mode flow ───
+                        when (externalStep) {
+                            0 -> {
+                                // Step 1: Type instruction
+                                SimpleTextField(
+                                    value = instruction,
+                                    onValueChange = { instruction = it },
+                                    placeholder = "Describe the layout you want…",
+                                    singleLine = false,
+                                    maxLines = 5,
+                                    modifier = Modifier.fillMaxWidth().height(120.dp)
+                                )
+                                PrimaryButton(
+                                    text = "Copy prompt to clipboard",
+                                    onClick = {
+                                        val fullPrompt = aiVm.buildPrompt(screenName, availableData) +
+                                            "\n\n--- USER REQUEST ---\n$instruction"
+                                        clipboard.setText(AnnotatedString(fullPrompt))
+                                        Toast.makeText(context, "Prompt copied! Paste it into your AI.", Toast.LENGTH_LONG).show()
+                                        externalStep = 1
+                                    },
+                                    enabled = instruction.isNotBlank(),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                SecondaryButton(
+                                    text = "Back",
+                                    onClick = onDismiss,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            1 -> {
+                                // Step 2: Paste response
+                                DesignText(
+                                    text = "Paste the JSON response from your AI below:",
+                                    style = LocalTypography.current.bodyEmphasis,
+                                    color = c.text
+                                )
+                                SimpleTextField(
+                                    value = pastedResponse,
+                                    onValueChange = { pastedResponse = it },
+                                    placeholder = "Paste the ScreenSpec JSON here…",
+                                    singleLine = false,
+                                    maxLines = 12,
+                                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                                )
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(Radius.pill))
+                                            .background(c.surfaceHi)
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null,
+                                                onClick = { externalStep = 0 }
+                                            )
+                                            .padding(vertical = Spacing.md),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        DesignText("Back", style = LocalTypography.current.bodyEmphasis, color = c.text)
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(Radius.pill))
+                                            .background(c.accent)
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null,
+                                                onClick = { aiVm.applyExternalResponse(pastedResponse, screenName) }
+                                            )
+                                            .padding(vertical = Spacing.md),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        DesignText("Apply", style = LocalTypography.current.bodyEmphasis, color = c.accentText)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // ─── Built-in mode flow (existing) ───
+                        SimpleTextField(
+                            value = instruction,
+                            onValueChange = { instruction = it },
+                            placeholder = "Describe the layout you want… (e.g. 'Show trending in a 2-column grid with big posters')",
+                            singleLine = false,
+                            maxLines = 5,
+                            modifier = Modifier.fillMaxWidth().height(120.dp)
+                        )
+                        PrimaryButton(
+                            text = "Generate Preview",
+                            onClick = { aiVm.generateSpec(instruction, screenName, availableData) },
+                            enabled = instruction.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        SecondaryButton(
+                            text = "Build real APK",
+                            onClick = { aiVm.generateCompose(instruction, screenName, availableData) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 is AiState.Generating -> {
@@ -252,7 +326,7 @@ private fun AiEditPanel(
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
-                                    onClick = onDiscard
+                                    onClick = { aiVm.discardPreview() }
                                 )
                                 .padding(vertical = Spacing.md),
                             contentAlignment = Alignment.Center
@@ -267,7 +341,7 @@ private fun AiEditPanel(
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
-                                    onClick = onApply
+                                    onClick = { aiVm.applyPreview(state.spec) }
                                 )
                                 .padding(vertical = Spacing.md),
                             contentAlignment = Alignment.Center
@@ -303,12 +377,12 @@ private fun AiEditPanel(
                     }
                     PrimaryButton(
                         text = "Push & Build APK",
-                        onClick = onTriggerBuild,
+                        onClick = { aiVm.triggerBuild(state.source, state.screenName) },
                         modifier = Modifier.fillMaxWidth()
                     )
                     SecondaryButton(
                         text = "Discard",
-                        onClick = onDiscard,
+                        onClick = { aiVm.discardPreview() },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -327,11 +401,23 @@ private fun AiEditPanel(
                             color = c.danger
                         )
                     }
-                    PrimaryButton(
-                        text = "Retry",
-                        onClick = { onGenerateSpec(instruction) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (isExternalMode) {
+                        // For external mode errors, go back to paste step
+                        PrimaryButton(
+                            text = "Back to paste",
+                            onClick = {
+                                aiVm.dismiss()
+                                externalStep = 1
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        PrimaryButton(
+                            text = "Retry",
+                            onClick = { aiVm.generateSpec(instruction, screenName, availableData) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     SecondaryButton(
                         text = "Close",
                         onClick = onDismiss,
@@ -400,7 +486,6 @@ private fun GeneratingIndicator() {
                 .rotate(rotation),
             contentAlignment = Alignment.Center
         ) {
-            // Three orbiting dots — simple, clean processing animation
             Box(
                 modifier = Modifier
                     .size(6.dp)

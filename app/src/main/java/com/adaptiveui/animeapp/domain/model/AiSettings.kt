@@ -11,6 +11,7 @@ import kotlinx.serialization.Serializable
 data class AiSettings(
     val enabled: Boolean = false,
     val quickEditEnabled: Boolean = false,
+    val aiMode: String = "BUILT_IN",  // "BUILT_IN" | "EXTERNAL"
     val provider: String = "Groq",
     val baseUrl: String = "https://api.groq.com/openai/v1",
     val apiKey: String = "",
@@ -22,6 +23,7 @@ data class AiSettings(
 ) {
     val effectiveModelId: String get() = if (useCustomModel) customModelId.ifBlank { modelId } else modelId
     val isConfigured: Boolean get() = apiKey.isNotBlank() && baseUrl.isNotBlank()
+    val isExternalMode: Boolean get() = aiMode == "EXTERNAL"
 }
 
 @Serializable

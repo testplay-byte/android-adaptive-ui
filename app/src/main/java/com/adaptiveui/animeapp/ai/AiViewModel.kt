@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
@@ -59,7 +60,8 @@ sealed interface AiState {
 @HiltViewModel
 class AiViewModel @Inject constructor(
     private val aiService: AiService,
-    private val dataStore: SettingsDataStore
+    private val dataStore: SettingsDataStore,
+    private val json: Json
 ) : ViewModel() {
 
     val aiSettings: StateFlow<AiSettings> = dataStore.aiSettings
@@ -173,4 +175,26 @@ class AiViewModel @Inject constructor(
         _state.value = AiState.Idle
         _testResult.value = null
     }
+
+    /**
+     * Parse a pasted JSON string as a [ScreenSpec] (External AI mode). On success, the spec
+     * lands in [AiState.PreviewReady] so the UI can show Apply/Discard. On failure, [AiState.Error].
+     */
+    fun applyExternalResponse(jsonString: String, screenName: String) {
+        viewModelScope.launch {
+            pendingScreenName = screenName
+            _state.value = AiState.Generating
+            runCatching {
+                json.decodeFromString(ScreenSpec.serializer(), jsonString)
+            }.onSuccess { spec ->
+                _state.value = AiState.PreviewReady(spec, screenName)
+            }.onFailure { e ->
+                _state.value = AiState.Error("Failed to parse JSON: ${e.message ?: "invalid JSON"}")
+            }
+        }
+    }
+
+    /** Build the full system prompt for the external-AI "Copy prompt" flow. */
+    fun buildPrompt(screenName: String, availableData: String): String =
+        SystemPrompt.buildForSpec(screenName, availableData)
 }
