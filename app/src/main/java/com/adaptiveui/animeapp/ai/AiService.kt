@@ -151,20 +151,20 @@ class AiService @Inject constructor(
      * Returns the GitHub Actions run URL on success. If the file push succeeds but the workflow
      * dispatch fails, the error message includes the commit URL so the user can recover.
      */
-    suspend fun pushAndTriggerBuild(composeSource: String, screenName: String): Result<String> =
+    suspend fun pushAndTriggerBuild(composeSource: String, screenName: String, githubToken: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val sanitized = sanitizeScreenName(screenName)
                 val path = "app/src/main/java/com/adaptiveui/animeapp/generated/${sanitized}Screen.kt"
                 val commitMessage = "chore(ai): regenerate $sanitized screen via AI"
 
-                val commitUrl = githubApi.writeFile(path, composeSource, commitMessage, settings.githubToken).getOrElse { err ->
+                val commitUrl = githubApi.writeFile(path, composeSource, commitMessage, githubToken).getOrElse { err ->
                     throw IllegalStateException("Failed to push generated file: ${err.message}", err)
                 }
 
                 githubApi.triggerWorkflow(
                     workflowFileName = "build-generated.yml",
-                    token = settings.githubToken,
+                    token = githubToken,
                     inputs = mapOf("screen_name" to sanitized)
                 ).getOrElse { err ->
                     throw IllegalStateException(

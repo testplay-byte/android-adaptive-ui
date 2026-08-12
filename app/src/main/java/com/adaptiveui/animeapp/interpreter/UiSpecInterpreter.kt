@@ -57,6 +57,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -553,7 +554,7 @@ private fun renderText(node: SpecNode, scope: Scope, m: Modifier) {
     if (content == null) { renderPlaceholder(node, m); return }
     val text = resolveTemplate(content.text, scope)
     val style = resolveTextStyle(content.style).copy(
-        textAlign = content.align?.let(::parseTextAlign)
+        textAlign = content.align?.let(::parseTextAlign) ?: TextAlign.Start
     )
     val color = content.color?.let { parseHex(it) } ?: LocalColors.current.text
     val maxLines = content.maxLines ?: Int.MAX_VALUE
@@ -1116,7 +1117,7 @@ private fun BackgroundSpec.toBackgroundModifier(
             Modifier.graphicsLayer {
                 renderEffect = RenderEffect.createBlurEffect(
                     blur, blur, Shader.TileMode.CLAMP
-                )
+                ).asComposeRenderEffect()
             }
         } else Modifier
         blurMod.background(tintColor, shape)

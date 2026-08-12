@@ -12,6 +12,8 @@ import com.adaptiveui.animeapp.interpreter.ScreenSpec
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -82,7 +84,7 @@ class SettingsDataStore @Inject constructor(
                 runCatching { json.decodeFromString<Map<String, ScreenSpec>>(raw) }.getOrNull()
             } ?: emptyMap()
             val updated = current + (screenName to spec)
-            prefs[KEY_SCREEN_SPECS] = json.encodeToString(updated)
+            prefs[KEY_SCREEN_SPECS] = json.encodeToString(MapSerializer(String.serializer(), ScreenSpec.serializer()), updated)
         }
     }
 
@@ -96,7 +98,8 @@ class SettingsDataStore @Inject constructor(
                 runCatching { json.decodeFromString<Map<String, ScreenSpec>>(raw) }.getOrNull()
             } ?: emptyMap()
             val updated = current - screenName
-            prefs[KEY_SCREEN_SPECS] = if (updated.isEmpty()) null else json.encodeToString(updated)
+            prefs[KEY_SCREEN_SPECS] = if (updated.isEmpty()) null
+                else json.encodeToString(MapSerializer(String.serializer(), ScreenSpec.serializer()), updated)
         }
     }
 
